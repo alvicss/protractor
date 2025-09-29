@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>量角器教學</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-top: 20px;
+            background-color: #f0f0f0;
+        }
+        #controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        canvas {
+            border: 2px solid #333;
+            background-color: #fff;
+            cursor: grab; /* 初始狀態可以拖曳 */
+        }
+        button {
+            padding: 10px 15px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        input[type="number"] {
+            padding: 8px;
+            font-size: 16px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            width: 80px;
+            text-align: center;
+        }
+        /* 移除 #feedback 的樣式，因為不再需要此元素 */
+    </style>
+</head>
+<body>
+    <h1>量角器教學軟體</h1>
+    <div id="controls">
+        <button id="newQuestionBtn">新題目</button>
+        <button id="resetBtn">重新</button>
+        <label for="angleInput">你的答案：</label>
+        <input type="number" id="angleInput" min="5" max="180" step="5">
+        <button id="checkAnswerBtn">檢查答案</button>
+    </div>
+    <canvas id="myCanvas" width="800" height="600"></canvas>
+    <!-- 移除 <div id="feedback"></div> -->
+
+    <script>
+        const canvas = document.getElementById('myCanvas');
+        const ctx = canvas.getContext('2d');
+        const newQuestionBtn = document.getElementById('newQuestionBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const angleInput = document.getElementById('angleInput');
+        const checkAnswerBtn = document.getElementById('checkAnswerBtn');
+        // const feedbackDiv = document.getElementById('feedback'); // 移除此行
+
+        const CANVAS_WIDTH = canvas.width;
+        const CANVAS_HEIGHT = canvas.height;
+
+        let correctAnswer = 0; // 存放當前題目的正確答案 (度數)
+        let angleLines = {
+            center: { x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 },
+            line1: { x: 0, y: 0 },
+            line2: { x: 0, y: 0 }
+        };
+        let initialAngleLines = null; // 用於儲存初始題目狀態
+
+        // 量角器屬性
+        const protractorRadius = 150;
+        let protractor = {
+            x: CANVAS_WIDTH - protractorRadius - 50, // 初始位置在右下角
+            y: CANVAS_HEIGHT - protractorRadius - 50,
+            rotation: 0, // 旋轉角度 (弧度)
+            isDragging: false,
+            isRotating: false,
+            dragOffsetX: 0,
+            dragOffsetY: 0,
+            isAligned: false // 是否已對齊夾角頂點
+        };
+
+        // 新增變數用於儲存回饋文字和顏色
+        let feedbackMessage = '';
+        let feedbackColor = '';
+
+        // --- 繪圖函數 ---
+
+        // 繪製夾角線
+        function drawAngleLines(center, p1, p2) {
+            ctx.strokeStyle = 'blue';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(center.x, center.y);
+            ctx.lineTo(p1.x, p1.y);
+            ctx.moveTo(center.x, center.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+
+            // 繪製夾角頂點
+            ctx.fillStyle = 'red';
+            ctx.beginPath();
+            ctx.arc(center.x, center.y, 5, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // 繪製量角器
+        function drawProtractor() {
+            ctx.save();
+            ctx.translate(protractor.x, protractor.y);
+            ctx.rotate(protractor.rotation);
+
+            // 繪製半圓
+            ctx.beginPath();
+            ctx.arc(0, 0, protractorRadius, Math.PI, 0, false); // 從180度到0度繪製半圓
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.7)'; // 半透明
+            ctx.fill();
+
+            // 繪製刻度輔助函數
+            const drawTick = (rad, length, color) => {
+                const cos = Math.cos(rad);
+                const sin = Math.sin(rad);
+                ctx.strokeStyle = color;
+                ctx.beginPath();
+                ctx.moveTo(0 - protractorRadius * cos, 0 - protractorRadius * sin);
+                ctx.lineTo(0 - (protractorRadius + length) * cos, 0 - (protractorRadius + length) * sin);
+                ctx.stroke();
+            };
+
+            // 繪製刻度
+            const outerColor = 'black';
+            const innerColor = 'red';
+            const textOffsetOuter = protractorRadius + 15;
+            const textOffsetInner = protractorRadius - 15;
+            ctx.font = '12px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+
+            for (let i = 0; i <= 180; i += 5) { // 每5度一個刻度
+                const rad = Math.PI - (i * Math.PI / 180); // 從左邊0度開始，逆時針增加
+                const cos = Math.cos(rad);
+                const sin = Math.sin(rad);
+
+                let lineLength = 5;
+                
+                // 主要刻度 (10度)
+                if (i % 10 === 0) {
+                    lineLength = 10;
+                    // 繪製外圈刻度線及數字 (0, 10, ... 180)
+                    drawTick(rad, lineLength, outerColor);
+                    ctx.fillStyle = outerColor;
+                    ctx.fillText(i.toString(), 0 - textOffsetOuter * cos, 0 - textOffsetOuter * sin);
+
+                    // 繪製內圈刻度線及數字 (180, 170, ... 0)
+                    drawTick(rad, -lineLength, innerColor); // 負數長度表示向內
+                    ctx.fillStyle = innerColor;
+                    ctx.fillText((180 - i).toString(), 0 - textOffsetInner * cos, 0 - textOffsetInner * sin);
+
+                } else { // 5度刻度
+                    drawTick(rad, lineLength, 'gray');
+                }
+            }
+
+            // 繪製量角器中心點
+            ctx.fillStyle = 'black';
+            ctx.beginPath();
+            ctx.arc(0, 0, 3, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.restore();
+        }
+
+        // 清除畫布
+        function clearCanvas() {
+            ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+        }
+
+        // 完整繪製所有內容
+        function drawAll() {
+            clearCanvas();
+            drawAngleLines(angleLines.center, angleLines.line1, angleLines.line2);
+            drawProtractor();
+
+            // 繪製回饋文字在畫布上方
+            if (feedbackMessage) {
+                ctx.save();
+                ctx.font = '30px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'top';
+                ctx.fillStyle = feedbackColor;
+                ctx.fillText(feedbackMessage, CANVAS_WIDTH / 2, 20); // 顯示在畫布上方20px處
+                ctx.restore();
+            }
+        }
+
+        // --- 輔助函數 ---
+
+        // 產生隨機角度 (度數)，且是5的倍數
+        function getRandomAngleDegrees() {
+            const angleDegrees = Math.floor(Math.random() * ( (180 - 5) / 5 + 1)) * 5 + 5;
+            correctAnswer = angleDegrees; // 儲存正確答案
+            return angleDegrees;
+        }
+
+        // 生成新題目
+        function generateNewQuestion() {
+            clearCanvas();
+            feedbackMessage = ''; // 清除回饋訊息
+            feedbackColor = '';
+            angleInput.value = ''; // 清除輸入框
+
+            // 重置量角器位置和狀態
+            protractor.x = CANVAS_WIDTH - protractorRadius - 50;
+            protractor.y = CANVAS_HEIGHT - protractorRadius - 50;
+            protractor.rotation = 0;
+            protractor.isAligned = false;
+            updateCursor(); // 更新游標
+
+            // 隨機生成夾角
+            const angleDegrees = getRandomAngleDegrees();
+            const angleRad = angleDegrees * Math.PI / 180;
+
+            // 確保兩條線不會重疊，且夾角在畫布範圍內
+            const lineLength = 200; // 線的長度
+            const startAngle1 = Math.random() * Math.PI * 2; // 第一條線的起始角度
+
+            // 第二條線的角度基於第一條線和夾角
+            let startAngle2 = startAngle1 + angleRad;
+
+            angleLines.line1.x = angleLines.center.x + lineLength * Math.cos(startAngle1);
+            angleLines.line1.y = angleLines.center.y + lineLength * Math.sin(startAngle1);
+            angleLines.line2.x = angleLines.center.x + lineLength * Math.cos(startAngle2);
+            angleLines.line2.y = angleLines.center.y + lineLength * Math.sin(startAngle2);
+
+            initialAngleLines = JSON.parse(JSON.stringify(angleLines)); // 儲存初始狀態
+            drawAll();
+        }
+
+        // 檢查量角器中心是否接近夾角頂點
+        function isNearVertex(x, y) {
+            const dist = Math.sqrt(
+                Math.pow(x - angleLines.center.x, 2) +
+                Math.pow(y - angleLines.center.y, 2)
+            );
+            return dist < 20; // 閾值，可調整
+        }
+
+        // 更新游標樣式
+        function updateCursor() {
+            if (!protractor.isAligned) {
+                canvas.style.cursor = 'grab';
+            } else {
+                canvas.style.cursor = 'ew-resize';
+            }
+        }
+
+        // --- 事件處理 ---
+
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            // 檢查是否點擊在量角器上 (使用一個稍微寬鬆的範圍，以防點擊邊緣)
+            const distToProtractorCenter = Math.sqrt(
+                Math.pow(mouseX - protractor.x, 2) +
+                Math.pow(mouseY - protractor.y, 2)
+            );
+
+            if (distToProtractorCenter <= protractorRadius + 10) { // 點擊在量角器半徑範圍內
+                if (!protractor.isAligned) {
+                    protractor.isDragging = true;
+                    protractor.dragOffsetX = mouseX - protractor.x;
+                    protractor.dragOffsetY = mouseY - protractor.y;
+                    canvas.style.cursor = 'grabbing';
+                } else {
+                    // 如果已對齊，只允許旋轉
+                    protractor.isRotating = true;
+                    // 計算初始旋轉角度的偏移，用於平滑旋轉
+                    const angleToMouse = Math.atan2(mouseY - protractor.y, mouseX - protractor.x);
+                    protractor.rotationOffset = protractor.rotation - angleToMouse;
+                    canvas.style.cursor = 'ew-resize'; // 旋轉游標
+                }
+            }
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            if (protractor.isDragging) {
+                protractor.x = mouseX - protractor.dragOffsetX;
+                protractor.y = mouseY - protractor.dragOffsetY;
+
+                // 自動對齊功能
+                if (isNearVertex(protractor.x, protractor.y)) {
+                    protractor.x = angleLines.center.x;
+                    protractor.y = angleLines.center.y;
+                    protractor.isAligned = true;
+                    protractor.isDragging = false; // 對齊後停止拖曳
+                    updateCursor(); // 變為旋轉游標
+                }
+                drawAll();
+            } else if (protractor.isRotating) {
+                const angleToMouse = Math.atan2(mouseY - protractor.y, mouseX - protractor.x);
+                protractor.rotation = angleToMouse + protractor.rotationOffset;
+                drawAll();
+            }
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            protractor.isDragging = false;
+            protractor.isRotating = false;
+            updateCursor(); // 更新游標
+        });
+
+        canvas.addEventListener('mouseleave', () => {
+            protractor.isDragging = false;
+            protractor.isRotating = false;
+            updateCursor(); // 更新游標
+        });
+
+
+        newQuestionBtn.addEventListener('click', generateNewQuestion);
+
+        resetBtn.addEventListener('click', () => {
+            if (initialAngleLines) {
+                clearCanvas();
+                angleLines = JSON.parse(JSON.stringify(initialAngleLines)); // 恢復初始角度線
+                
+                // 重置量角器位置和狀態
+                protractor.x = CANVAS_WIDTH - protractorRadius - 50;
+                protractor.y = CANVAS_HEIGHT - protractorRadius - 50;
+                protractor.rotation = 0;
+                protractor.isAligned = false;
+                updateCursor(); // 更新游標
+                
+                feedbackMessage = ''; // 清除回饋訊息
+                feedbackColor = '';
+                angleInput.value = '';
+                drawAll();
+            }
+        });
+
+        checkAnswerBtn.addEventListener('click', () => {
+            const userAnswer = parseInt(angleInput.value);
+            if (isNaN(userAnswer)) {
+                feedbackMessage = "請輸入一個數字！";
+                feedbackColor = 'orange';
+                drawAll(); // 重新繪製以顯示文字
+                return;
+            }
+
+            // 允許正負1度的誤差
+            if (Math.abs(userAnswer - correctAnswer) <= 1) { 
+                feedbackMessage = "恭喜答對！";
+                feedbackColor = 'green';
+            } else {
+                //feedbackMessage = "請再想想看！正確答案是 " + correctAnswer + " 度"; // 顯示正確答案方便學習
+				feedbackMessage = "請再想想看！"; // 顯示正確答案方便學習
+                feedbackColor = 'red';
+            }
+            drawAll(); // 重新繪製以顯示文字
+        });
+
+        // 首次載入頁面時生成一個題目
+        generateNewQuestion();
+    </script>
+</body>
+</html>
